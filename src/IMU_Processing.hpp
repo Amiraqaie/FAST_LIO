@@ -192,13 +192,51 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
 
     N ++;
   }
-  state_ikfom init_state = kf_state.get_x();
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  // state_ikfom init_state = kf_state.get_x();
+  // init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
   
-  //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
-  init_state.bg  = mean_gyr;
+  // //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
+  // init_state.bg  = mean_gyr;
+  // init_state.offset_T_L_I = Lidar_T_wrt_IMU;
+  // init_state.offset_R_L_I = Lidar_R_wrt_IMU;
+  // kf_state.change_x(init_state);
+
+  state_ikfom init_state = kf_state.get_x();
+
+  // Mean accelerometer measurement while the IMU is stationary.
+  // This assumes the IMU reports specific force pointing upward
+  // when stationary, as expected for the usual ROS IMU convention.
+  if (mean_acc.norm() > 1e-6)
+  {
+      const Eigen::Vector3d acc_dir = mean_acc.normalized();
+      const Eigen::Vector3d world_up(0.0, 0.0, 1.0);
+
+      // Construct the initial IMU/body-to-world rotation so that
+      // the measured upward acceleration direction maps to world +Z.
+      const Eigen::Quaterniond q_align =
+          Eigen::Quaterniond::FromTwoVectors(acc_dir, world_up);
+
+      init_state.rot = SO3(q_align.toRotationMatrix());
+
+      // Gravity is now expressed in the gravity-aligned world frame.
+      init_state.grav = S2(
+          Eigen::Vector3d(0.0, 0.0, -G_m_s2)
+      );
+
+      ROS_INFO("Gravity-aligned initialization:");
+      ROS_INFO("Mean accel: %.4f %.4f %.4f",
+              mean_acc.x(), mean_acc.y(), mean_acc.z());
+      ROS_INFO("Gravity initialized to: 0 0 %.4f", -G_m_s2);
+  }
+  else
+  {
+      ROS_ERROR("Invalid mean IMU acceleration; cannot align gravity.");
+  }
+
+  init_state.bg = mean_gyr;
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;
+
   kf_state.change_x(init_state);
 
   esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
