@@ -697,22 +697,22 @@ void publish_odometry(
     // Publish the completed odometry message.
     pubOdomAftMapped->publish(odomAftMapped);
 
-    // Preserve the original TF publishing.
-    geometry_msgs::msg::TransformStamped trans;
-    trans.header.frame_id = "odom";
-    trans.header.stamp = odomAftMapped.header.stamp;
-    trans.child_frame_id = "body";
+    // // Preserve the original TF publishing.
+    // geometry_msgs::msg::TransformStamped trans;
+    // trans.header.frame_id = "odom";
+    // trans.header.stamp = odomAftMapped.header.stamp;
+    // trans.child_frame_id = "body";
 
-    trans.transform.translation.x = odomAftMapped.pose.pose.position.x;
-    trans.transform.translation.y = odomAftMapped.pose.pose.position.y;
-    trans.transform.translation.z = odomAftMapped.pose.pose.position.z;
+    // trans.transform.translation.x = odomAftMapped.pose.pose.position.x;
+    // trans.transform.translation.y = odomAftMapped.pose.pose.position.y;
+    // trans.transform.translation.z = odomAftMapped.pose.pose.position.z;
 
-    trans.transform.rotation.w = odomAftMapped.pose.pose.orientation.w;
-    trans.transform.rotation.x = odomAftMapped.pose.pose.orientation.x;
-    trans.transform.rotation.y = odomAftMapped.pose.pose.orientation.y;
-    trans.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
+    // trans.transform.rotation.w = odomAftMapped.pose.pose.orientation.w;
+    // trans.transform.rotation.x = odomAftMapped.pose.pose.orientation.x;
+    // trans.transform.rotation.y = odomAftMapped.pose.pose.orientation.y;
+    // trans.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
 
-    tf_br->sendTransform(trans);
+    // tf_br->sendTransform(trans);
 }
 
 void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
