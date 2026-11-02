@@ -557,7 +557,7 @@ void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shared
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = "body";
+    laserCloudmsg.header.frame_id = "livox_frame";
     pubLaserCloudFull_body->publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -631,7 +631,7 @@ void publish_odometry(
     std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
 {
     odomAftMapped.header.frame_id = "odom";
-    odomAftMapped.child_frame_id = "body";
+    odomAftMapped.child_frame_id = "livox_frame";
     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
 
     set_posestamp(odomAftMapped.pose);
@@ -701,7 +701,7 @@ void publish_odometry(
     // geometry_msgs::msg::TransformStamped trans;
     // trans.header.frame_id = "odom";
     // trans.header.stamp = odomAftMapped.header.stamp;
-    // trans.child_frame_id = "body";
+    // trans.child_frame_id = "livox_frame";
 
     // trans.transform.translation.x = odomAftMapped.pose.pose.position.x;
     // trans.transform.translation.y = odomAftMapped.pose.pose.position.y;
