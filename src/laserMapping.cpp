@@ -463,6 +463,23 @@ static void reanchor_highrate(double anchor_time,
     hr_blend_t0 = t_end;
     highrate_odom_ready = ok;
     if (!ok) hr_has_pub = false;
+
+    const double reanchor_dt =
+    std::fabs(hr_last_pub_time - t_end);
+
+    static int debug_counter = 0;
+
+    if (++debug_counter % 20 == 0)
+    {
+        std::cout
+            << "[HIGH RATE REANCHOR]"
+            << " dt=" << reanchor_dt * 1000.0 << " ms"
+            << " ready=" << highrate_odom_ready
+            << " has_pub=" << hr_has_pub
+            << " imu_buffer=" << hr_imu_ring.size()
+            << " correction=" << hr_corr_pos.norm()
+            << std::endl;
+    }
 }
 
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg) 
@@ -854,6 +871,23 @@ void publish_odometry(
         R_body_to_world.transpose()
         * velocity_cov_world
         * R_body_to_world;
+
+    // Reset twist covariance.
+    std::fill(
+        odomAftMapped.twist.covariance.begin(),
+        odomAftMapped.twist.covariance.end(),
+        0.0
+    );
+
+    // Populate linear velocity covariance in body frame.
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+        {
+            odomAftMapped.twist.covariance[i * 6 + j] =
+                velocity_cov_body(i, j);
+        }
+    }
 
     // Populate the linear velocity 3x3 block in the 6x6 twist covariance.
     for (int i = 0; i < 6; ++i)
