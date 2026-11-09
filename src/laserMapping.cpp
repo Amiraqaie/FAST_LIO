@@ -98,6 +98,9 @@ bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool    is_first_lidar = true;
+bool   highrate_odom_en = true, highrate_odom_ready = false;
+double highrate_odom_max_dt = 0.05;
+string highrate_odom_topic = "/Odometry_highrate";
 
 vector<vector<int>>  pointSearchInd_surf; 
 vector<BoxPointType> cub_needrm;
@@ -133,12 +136,17 @@ M3D Lidar_R_wrt_IMU(Eye3d);
 MeasureGroup Measures;
 esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
 state_ikfom state_point;
+state_ikfom state_highrate;
 vect3 pos_lid;
 
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::Quaternion geoQuat;
 geometry_msgs::msg::PoseStamped msg_body_pose;
+nav_msgs::msg::Odometry odomHighRate;
+rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomHighRate;
+mutex mtx_highrate_odom;
+sensor_msgs::msg::Imu::ConstSharedPtr last_highrate_imu;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
@@ -280,6 +288,37 @@ void lasermap_fov_segment()
     kdtree_delete_time = omp_get_wtime() - delete_begin;
 }
 
+void fill_highrate_odom_msg(nav_msgs::msg::Odometry &odom,
+                            const state_ikfom &state,
+                            const V3D &gyr_body,
+                            const builtin_interfaces::msg::Time &stamp)
+{
+    odom.header.frame_id = "odom";
+    odom.child_frame_id  = "livox_frame";
+    odom.header.stamp    = stamp;
+
+    odom.pose.pose.position.x = state.pos(0);
+    odom.pose.pose.position.y = state.pos(1);
+    odom.pose.pose.position.z = state.pos(2);
+    odom.pose.pose.orientation.x = state.rot.coeffs()[0];
+    odom.pose.pose.orientation.y = state.rot.coeffs()[1];
+    odom.pose.pose.orientation.z = state.rot.coeffs()[2];
+    odom.pose.pose.orientation.w = state.rot.coeffs()[3];
+
+    // linear velocity in body frame (same convention as publish_odometry)
+    Eigen::Quaterniond q(state.rot.coeffs()[3], state.rot.coeffs()[0],
+                         state.rot.coeffs()[1], state.rot.coeffs()[2]);
+    Eigen::Vector3d v_world(state.vel(0), state.vel(1), state.vel(2));
+    Eigen::Vector3d v_body = q.inverse() * v_world;
+
+    odom.twist.twist.linear.x = v_body.x();
+    odom.twist.twist.linear.y = v_body.y();
+    odom.twist.twist.linear.z = v_body.z();
+    odom.twist.twist.angular.x = gyr_body(0);
+    odom.twist.twist.angular.y = gyr_body(1);
+    odom.twist.twist.angular.z = gyr_body(2);
+}
+
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg) 
 {
     mtx_buffer.lock();
@@ -350,9 +389,7 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
 void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
 {
     publish_count ++;
-    // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
-    
 
     msg->header.stamp = get_ros_time(get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
@@ -362,13 +399,15 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     }
 
     double timestamp = get_time_sec(msg->header.stamp);
+    bool imu_loop_back = false;
 
     mtx_buffer.lock();
 
     if (timestamp < last_timestamp_imu)
     {
-        std::cerr << "lidar loop back, clear buffer" << std::endl;
+        std::cerr << "imu loop back, clear buffer" << std::endl;
         imu_buffer.clear();
+        imu_loop_back = true;
     }
 
     last_timestamp_imu = timestamp;
@@ -376,6 +415,44 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     imu_buffer.push_back(msg);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
+
+    /*** high-rate odometry: propagate the last EKF state with every IMU sample ***/
+    if (!highrate_odom_en) return;
+
+    nav_msgs::msg::Odometry odom_out;
+    bool publish_highrate = false;
+    {
+        lock_guard<mutex> lock(mtx_highrate_odom);
+        if (imu_loop_back)
+        {
+            highrate_odom_ready = false;
+            last_highrate_imu.reset();
+        }
+        if (highrate_odom_ready && last_highrate_imu)
+        {
+            V3D gyr_unbiased = Zero3d;
+            publish_highrate = p_imu->PropagateHighRateState(last_highrate_imu, msg,
+                                                             state_highrate, nullptr,
+                                                             &gyr_unbiased,
+                                                             highrate_odom_max_dt);
+            if (publish_highrate)
+            {
+                last_highrate_imu = msg;
+                fill_highrate_odom_msg(odomHighRate, state_highrate, gyr_unbiased, msg->header.stamp);
+                odom_out = odomHighRate;
+            }
+            else if (timestamp - get_time_sec(last_highrate_imu->header.stamp) > highrate_odom_max_dt)
+            {
+                // IMU dropout: stop publishing until the next LiDAR update re-anchors us
+                highrate_odom_ready = false;
+            }
+        }
+    }
+
+    if (publish_highrate && pubOdomHighRate)
+    {
+        pubOdomHighRate->publish(odom_out);
+    }
 }
 
 double lidar_mean_scantime = 0.0;
@@ -861,6 +938,9 @@ public:
         this->declare_parameter<bool>("publish.scan_publish_en", true);
         this->declare_parameter<bool>("publish.dense_publish_en", true);
         this->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
+        this->declare_parameter<bool>("publish.highrate_odom_en", true);
+        this->declare_parameter<string>("publish.highrate_odom_topic", "/Odometry_highrate");
+        this->declare_parameter<double>("publish.highrate_odom_max_dt", 0.05);
         this->declare_parameter<int>("max_iteration", 4);
         this->declare_parameter<string>("map_file_path", "");
         this->declare_parameter<string>("common.lid_topic", "/livox/lidar");
@@ -897,6 +977,9 @@ public:
         this->get_parameter_or<bool>("publish.scan_publish_en", scan_pub_en, true);
         this->get_parameter_or<bool>("publish.dense_publish_en", dense_pub_en, true);
         this->get_parameter_or<bool>("publish.scan_bodyframe_pub_en", scan_body_pub_en, true);
+        this->get_parameter_or<bool>("publish.highrate_odom_en", highrate_odom_en, true);
+        this->get_parameter_or<string>("publish.highrate_odom_topic", highrate_odom_topic, string("/Odometry_highrate"));
+        this->get_parameter_or<double>("publish.highrate_odom_max_dt", highrate_odom_max_dt, 0.05);
         this->get_parameter_or<int>("max_iteration", NUM_MAX_ITERATIONS, 4);
         this->get_parameter_or<string>("map_file_path", map_file_path, "");
         this->get_parameter_or<string>("common.lid_topic", lid_topic, "/livox/lidar");
@@ -989,6 +1072,7 @@ public:
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+        pubOdomHighRate = this->create_publisher<nav_msgs::msg::Odometry>(highrate_odom_topic, rclcpp::QoS(200));
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -1120,6 +1204,48 @@ private:
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
 
+            /******* Re-anchor high-rate odometry on the fresh EKF state *******/
+            if (highrate_odom_en)
+            {
+                lock_guard<mutex> lock_hr(mtx_highrate_odom);
+
+                // IMU samples newer than lidar_end_time that are still waiting
+                std::vector<sensor_msgs::msg::Imu::ConstSharedPtr> pending;
+                {
+                    lock_guard<mutex> lock_buf(mtx_buffer);
+                    pending.assign(imu_buffer.begin(), imu_buffer.end());
+                }
+
+                state_highrate = state_point;                       // state at lidar_end_time
+                odomHighRate.pose.covariance  = odomAftMapped.pose.covariance;
+                odomHighRate.twist.covariance = odomAftMapped.twist.covariance;
+
+                if (!Measures.imu.empty())
+                {
+                    sensor_msgs::msg::Imu::SharedPtr imu_anchor(new sensor_msgs::msg::Imu(*Measures.imu.back()));
+                    imu_anchor->header.stamp = get_ros_time(lidar_end_time);
+                    last_highrate_imu = imu_anchor;
+                    highrate_odom_ready = true;
+
+                    // catch up to the newest IMU sample so there is no latency lag
+                    for (const auto &imu : pending)
+                    {
+                        if (get_time_sec(imu->header.stamp) <= lidar_end_time) continue;
+                        if (!p_imu->PropagateHighRateState(last_highrate_imu, imu, state_highrate,
+                                                           nullptr, nullptr, highrate_odom_max_dt))
+                        {
+                            highrate_odom_ready = false;
+                            break;
+                        }
+                        last_highrate_imu = imu;
+                    }
+                }
+                else
+                {
+                    last_highrate_imu.reset();
+                    highrate_odom_ready = false;
+                }
+            }
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
             map_incremental();
