@@ -67,51 +67,6 @@ class ImuProcess
 
  private:
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
-  bool ImuProcess::PropagateHighRateState(const sensor_msgs::msg::Imu::ConstSharedPtr &last_imu,
-                                          const sensor_msgs::msg::Imu::ConstSharedPtr &cur_imu,
-                                          state_ikfom &state_io,
-                                          V3D *acc_world,
-                                          V3D *gyr_unbiased,
-                                          double max_dt)
-  {
-    if (imu_need_init_ || !last_imu || !cur_imu) return false;
-
-    const double dt = rclcpp::Time(cur_imu->header.stamp).seconds()
-                    - rclcpp::Time(last_imu->header.stamp).seconds();
-    if (dt <= 0.0 || dt > max_dt) return false;
-
-    const double mean_acc_norm = mean_acc.norm();
-    if (mean_acc_norm < 1e-6) return false;
-
-    V3D acc_avr, gyr_avr;
-    gyr_avr << 0.5 * (last_imu->angular_velocity.x + cur_imu->angular_velocity.x),
-              0.5 * (last_imu->angular_velocity.y + cur_imu->angular_velocity.y),
-              0.5 * (last_imu->angular_velocity.z + cur_imu->angular_velocity.z);
-    acc_avr << 0.5 * (last_imu->linear_acceleration.x + cur_imu->linear_acceleration.x),
-              0.5 * (last_imu->linear_acceleration.y + cur_imu->linear_acceleration.y),
-              0.5 * (last_imu->linear_acceleration.z + cur_imu->linear_acceleration.z);
-
-    // same normalisation as UndistortPcl()
-    acc_avr = acc_avr * G_m_s2 / mean_acc_norm;
-
-    const V3D gyr_body    = gyr_avr - state_io.bg;
-    const V3D acc_inertial = state_io.rot * (acc_avr - state_io.ba);
-
-    V3D acc_total = acc_inertial;
-    for (int i = 0; i < 3; ++i)
-    {
-      acc_total[i] += state_io.grav[i];
-    }
-
-    state_io.pos += state_io.vel * dt + 0.5 * acc_total * dt * dt;
-    state_io.vel += acc_total * dt;
-    state_io.rot  = SO3(state_io.rot.toRotationMatrix() * Exp(gyr_body, dt));
-
-    if (acc_world)    *acc_world    = acc_total;
-    if (gyr_unbiased) *gyr_unbiased = gyr_body;
-
-    return true;
-  }
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
 
   PointCloudXYZI::Ptr cur_pcl_un_;
@@ -302,6 +257,52 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   kf_state.change_P(init_P);
   last_imu_ = meas.imu.back();
 
+}
+
+bool ImuProcess::PropagateHighRateState(const sensor_msgs::msg::Imu::ConstSharedPtr &last_imu,
+                                        const sensor_msgs::msg::Imu::ConstSharedPtr &cur_imu,
+                                        state_ikfom &state_io,
+                                        V3D *acc_world,
+                                        V3D *gyr_unbiased,
+                                        double max_dt)
+{
+  if (imu_need_init_ || !last_imu || !cur_imu) return false;
+
+  const double dt = rclcpp::Time(cur_imu->header.stamp).seconds()
+                  - rclcpp::Time(last_imu->header.stamp).seconds();
+  if (dt <= 0.0 || dt > max_dt) return false;
+
+  const double mean_acc_norm = mean_acc.norm();
+  if (mean_acc_norm < 1e-6) return false;
+
+  V3D acc_avr, gyr_avr;
+  gyr_avr << 0.5 * (last_imu->angular_velocity.x + cur_imu->angular_velocity.x),
+            0.5 * (last_imu->angular_velocity.y + cur_imu->angular_velocity.y),
+            0.5 * (last_imu->angular_velocity.z + cur_imu->angular_velocity.z);
+  acc_avr << 0.5 * (last_imu->linear_acceleration.x + cur_imu->linear_acceleration.x),
+            0.5 * (last_imu->linear_acceleration.y + cur_imu->linear_acceleration.y),
+            0.5 * (last_imu->linear_acceleration.z + cur_imu->linear_acceleration.z);
+
+  // same normalisation as UndistortPcl()
+  acc_avr = acc_avr * G_m_s2 / mean_acc_norm;
+
+  const V3D gyr_body    = gyr_avr - state_io.bg;
+  const V3D acc_inertial = state_io.rot * (acc_avr - state_io.ba);
+
+  V3D acc_total = acc_inertial;
+  for (int i = 0; i < 3; ++i)
+  {
+    acc_total[i] += state_io.grav[i];
+  }
+
+  state_io.pos += state_io.vel * dt + 0.5 * acc_total * dt * dt;
+  state_io.vel += acc_total * dt;
+  state_io.rot  = SO3(state_io.rot.toRotationMatrix() * Exp(gyr_body, dt));
+
+  if (acc_world)    *acc_world    = acc_total;
+  if (gyr_unbiased) *gyr_unbiased = gyr_body;
+
+  return true;
 }
 
 void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_out)
