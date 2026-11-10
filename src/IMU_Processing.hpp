@@ -3,6 +3,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <atomic>
 #include <fstream>
 #include <csignal>
 #include <so3_math.h>
@@ -85,11 +86,12 @@ class ImuProcess
   double last_lidar_end_time_;
   int    init_iter_num = 1;
   bool   b_first_frame_ = true;
-  bool   imu_need_init_ = true;
+  std::atomic<bool>   imu_need_init_{true};
+  std::atomic<double> mean_acc_norm_{0.0};
 };
 
 ImuProcess::ImuProcess()
-    : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1)
+    : b_first_frame_(true), start_timestamp_(-1)
 {
   init_iter_num = 1;
   Q = process_noise_cov();
@@ -266,13 +268,12 @@ bool ImuProcess::PropagateHighRateState(const sensor_msgs::msg::Imu::ConstShared
                                         V3D *gyr_unbiased,
                                         double max_dt)
 {
-  if (imu_need_init_ || !last_imu || !cur_imu) return false;
-
+  if (imu_need_init_.load(std::memory_order_acquire) || !last_imu || !cur_imu) return false;
   const double dt = rclcpp::Time(cur_imu->header.stamp).seconds()
                   - rclcpp::Time(last_imu->header.stamp).seconds();
   if (dt <= 0.0 || dt > max_dt) return false;
 
-  const double mean_acc_norm = mean_acc.norm();
+  const double mean_acc_norm = mean_acc_norm_.load(std::memory_order_relaxed);
   if (mean_acc_norm < 1e-6) return false;
 
   V3D acc_avr, gyr_avr;
@@ -443,8 +444,6 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
   {
     /// The very first lidar frame
     IMU_init(meas, kf_state, init_iter_num);
-
-    imu_need_init_ = true;
     
     last_imu_   = meas.imu.back();
 
@@ -452,10 +451,10 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
     if (init_iter_num > MAX_INI_COUNT)
     {
       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
-      imu_need_init_ = false;
-
       cov_acc = cov_acc_scale;
       cov_gyr = cov_gyr_scale;
+      mean_acc_norm_.store(mean_acc.norm(), std::memory_order_relaxed);
+      imu_need_init_.store(false, std::memory_order_release);   // must be last
       std::cout << "IMU Initial Done" << std::endl;
       // ROS_INFO("IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\
       //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(), cov_bias_gyr[0], cov_bias_gyr[1], cov_bias_gyr[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
