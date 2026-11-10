@@ -396,7 +396,7 @@ static void highrate_imu_step(const sensor_msgs::msg::Imu::SharedPtr &msg, doubl
                                     msg->angular_velocity.y,
                                     msg->angular_velocity.z);
                     // adjust 0.002 / 0.02 to your IMU rate (200 Hz -> nominal 0.005)
-                    if (dt > 0.06 || dt < 0.006 || w_dbg.norm() > 8.0)
+                    if (dt > 0.06 || dt < 0.006 || w_dbg.norm() > 1.0)
                     {
                         std::cerr << "[HR-IMU] t=" << std::fixed << t
                                   << " dt=" << dt * 1000.0 << " ms"
