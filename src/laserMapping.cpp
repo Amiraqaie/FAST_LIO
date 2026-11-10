@@ -355,6 +355,7 @@ static void build_highrate_odom(const state_ikfom &s, const V3D &gyr_body,
 }
 
 // called from imu_cbk for every IMU sample
+// Nominal IMU period is ~5 ms (200 Hz); tune to your IMU.
 static void highrate_imu_step(const sensor_msgs::msg::Imu::SharedPtr &msg, double t)
 {
     if (!highrate_odom_en) return;
@@ -389,6 +390,22 @@ static void highrate_imu_step(const sensor_msgs::msg::Imu::SharedPtr &msg, doubl
             }
             else
             {
+                // ---- DEBUG: flag dt outliers and gyro spikes (remove when done) ----
+                {
+                    const V3D w_dbg(msg->angular_velocity.x,
+                                    msg->angular_velocity.y,
+                                    msg->angular_velocity.z);
+                    // adjust 0.002 / 0.02 to your IMU rate (200 Hz -> nominal 0.005)
+                    if (dt > 0.06 || dt < 0.006 || w_dbg.norm() > 8.0)
+                    {
+                        std::cerr << "[HR-IMU] t=" << std::fixed << t
+                                  << " dt=" << dt * 1000.0 << " ms"
+                                  << " |gyr|=" << w_dbg.norm() << " rad/s"
+                                  << std::endl;
+                    }
+                }
+                // ---- END DEBUG ----
+
                 V3D gyr = Zero3d;
                 if (p_imu->PropagateHighRateState(last_highrate_imu, msg, state_highrate,
                                                   nullptr, &gyr, highrate_odom_max_dt))
