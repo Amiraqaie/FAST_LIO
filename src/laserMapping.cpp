@@ -1668,9 +1668,6 @@ private:
     using HighRateEKF =
         esekfom::esekf<state_ikfom, 12, input_ikfom>;
 
-    using HighRateImuPtr =
-        sensor_msgs::msg::Imu::ConstSharedPtr;
-
     HighRateEKF highrate_kf_;
 
     std::mutex highrate_mutex_;
