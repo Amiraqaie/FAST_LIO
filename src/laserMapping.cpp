@@ -1299,30 +1299,150 @@ private:
         return true;
     }
 
+    // void reset_highrate_from_main_kf(
+    //     double anchor_time,
+    //     const HighRateImuPtr &anchor_imu)
+    // {
+    //     if (!highrate_model_ready_ ||
+    //         !p_imu->is_initialized() ||
+    //         !anchor_imu)
+    //     {
+    //         return;
+    //     }
+
+    //     const double acc_norm =
+    //         p_imu->get_mean_acc_norm();
+
+    //     if (!std::isfinite(acc_norm) || acc_norm < 1e-6)
+    //         return;
+
+    //     // These copies are made on the mapping thread.
+    //     // The high-rate thread never reads the main kf.
+    //     state_ikfom anchor_state = kf.get_x();
+    //     auto anchor_cov = kf.get_P();
+
+    //     // Reproduce the exact process noise configuration used
+    //     // by ImuProcess::UndistortPcl().
+    //     Eigen::Matrix<double, 12, 12> Q =
+    //         Eigen::Matrix<double, 12, 12>::Zero();
+
+    //     Q.block<3, 3>(0, 0).diagonal() = p_imu->cov_gyr;
+    //     Q.block<3, 3>(3, 3).diagonal() = p_imu->cov_acc;
+    //     Q.block<3, 3>(6, 6).diagonal() = p_imu->cov_bias_gyr;
+    //     Q.block<3, 3>(9, 9).diagonal() = p_imu->cov_bias_acc;
+
+    //     std::lock_guard<std::mutex> lock(highrate_mutex_);
+
+    //     // Full state AND full covariance replacement.
+    //     highrate_kf_.change_x(anchor_state);
+    //     highrate_kf_.change_P(anchor_cov);
+
+    //     highrate_Q_ = Q;
+    //     highrate_acc_norm_ = acc_norm;
+
+    //     highrate_state_time_ = anchor_time;
+    //     highrate_prev_imu_ = anchor_imu;
+
+    //     highrate_initialized_ = true;
+
+    //     // Remove samples already covered by this anchor.
+    //     while (!highrate_imu_history_.empty() &&
+    //         get_time_sec(
+    //             highrate_imu_history_.front()->header.stamp
+    //         ) <= anchor_time)
+    //     {
+    //         highrate_imu_history_.pop_front();
+    //     }
+
+    //     // Replay all IMU samples received after the anchor.
+    //     // IMPORTANT: replay is silent; it must not republish
+    //     // timestamps that were already published.
+    //     for (const auto &imu : highrate_imu_history_)
+    //     {
+    //         if (!propagate_highrate_locked(imu, false))
+    //         {
+    //             highrate_initialized_ = false;
+    //             break;
+    //         }
+    //     }
+    // }
+
     void reset_highrate_from_main_kf(
         double anchor_time,
         const HighRateImuPtr &anchor_imu)
     {
-        if (!highrate_model_ready_ ||
-            !p_imu->is_initialized() ||
-            !anchor_imu)
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET 0] entered: anchor=%.9f imu=%p",
+            anchor_time,
+            static_cast<const void *>(anchor_imu.get())
+        );
+
+        if (!highrate_model_ready_)
         {
+            RCLCPP_WARN(this->get_logger(), "[HR-RESET] model not ready");
             return;
         }
+
+        if (!p_imu)
+        {
+            RCLCPP_ERROR(this->get_logger(), "[HR-RESET] p_imu is null");
+            return;
+        }
+
+        if (!p_imu->is_initialized())
+        {
+            RCLCPP_WARN(this->get_logger(), "[HR-RESET] IMU not initialized");
+            return;
+        }
+
+        if (!anchor_imu)
+        {
+            RCLCPP_ERROR(this->get_logger(), "[HR-RESET] anchor IMU is null");
+            return;
+        }
+
+        if (!std::isfinite(anchor_time))
+        {
+            RCLCPP_ERROR(this->get_logger(), "[HR-RESET] invalid anchor time");
+            return;
+        }
+
+        const double imu_stamp =
+            get_time_sec(anchor_imu->header.stamp);
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET 1] anchor=%.9f imu_stamp=%.9f",
+            anchor_time,
+            imu_stamp
+        );
+
+        if (!std::isfinite(imu_stamp))
+            return;
 
         const double acc_norm =
             p_imu->get_mean_acc_norm();
 
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET 2] acc_norm=%.9f",
+            acc_norm
+        );
+
         if (!std::isfinite(acc_norm) || acc_norm < 1e-6)
             return;
 
-        // These copies are made on the mapping thread.
-        // The high-rate thread never reads the main kf.
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 3] reading main EKF state");
+
         state_ikfom anchor_state = kf.get_x();
+
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 4] reading main EKF covariance");
+
         auto anchor_cov = kf.get_P();
 
-        // Reproduce the exact process noise configuration used
-        // by ImuProcess::UndistortPcl().
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 5] main EKF snapshot obtained");
+
         Eigen::Matrix<double, 12, 12> Q =
             Eigen::Matrix<double, 12, 12>::Zero();
 
@@ -1331,11 +1451,19 @@ private:
         Q.block<3, 3>(6, 6).diagonal() = p_imu->cov_bias_gyr;
         Q.block<3, 3>(9, 9).diagonal() = p_imu->cov_bias_acc;
 
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 6] acquiring highrate mutex");
+
         std::lock_guard<std::mutex> lock(highrate_mutex_);
 
-        // Full state AND full covariance replacement.
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 7] mutex acquired");
+
         highrate_kf_.change_x(anchor_state);
+
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 8] change_x completed");
+
         highrate_kf_.change_P(anchor_cov);
+
+        RCLCPP_INFO(this->get_logger(), "[HR-RESET 9] change_P completed");
 
         highrate_Q_ = Q;
         highrate_acc_norm_ = acc_norm;
@@ -1345,26 +1473,67 @@ private:
 
         highrate_initialized_ = true;
 
-        // Remove samples already covered by this anchor.
-        while (!highrate_imu_history_.empty() &&
-            get_time_sec(
-                highrate_imu_history_.front()->header.stamp
-            ) <= anchor_time)
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET 10] history size=%zu",
+            highrate_imu_history_.size()
+        );
+
+        while (!highrate_imu_history_.empty())
         {
-            highrate_imu_history_.pop_front();
+            const auto &imu = highrate_imu_history_.front();
+
+            if (!imu)
+            {
+                RCLCPP_ERROR(this->get_logger(), "[HR-RESET] null history sample");
+                highrate_imu_history_.pop_front();
+                continue;
+            }
+
+            const double stamp =
+                get_time_sec(imu->header.stamp);
+
+            if (!std::isfinite(stamp) || stamp <= anchor_time)
+            {
+                highrate_imu_history_.pop_front();
+                continue;
+            }
+
+            break;
         }
 
-        // Replay all IMU samples received after the anchor.
-        // IMPORTANT: replay is silent; it must not republish
-        // timestamps that were already published.
+        size_t replay_count = 0;
+
         for (const auto &imu : highrate_imu_history_)
         {
-            if (!propagate_highrate_locked(imu, false))
+            if (!imu)
             {
+                RCLCPP_ERROR(this->get_logger(), "[HR-RESET] null replay sample");
                 highrate_initialized_ = false;
                 break;
             }
+
+            if (!propagate_highrate_locked(imu, false))
+            {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[HR-RESET] replay failed at sample %zu",
+                    replay_count
+                );
+
+                highrate_initialized_ = false;
+                break;
+            }
+
+            ++replay_count;
         }
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET 11] finished; replayed=%zu initialized=%d",
+            replay_count,
+            static_cast<int>(highrate_initialized_)
+        );
     }
 
     void imu_callback(
