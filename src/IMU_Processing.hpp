@@ -59,15 +59,6 @@ class ImuProcess
   V3D cov_bias_acc;
   double first_lidar_time;
 
-  // Read-only accessors for the independent high-rate propagation filter.
-  // These are called from the mapping thread when copying a LiDAR correction.
-  bool is_initialized() const { return !imu_need_init_; }
-  double acceleration_scale() const
-  {
-    const double n = mean_acc.norm();
-    return (std::isfinite(n) && n > 1e-6) ? (G_m_s2 / n) : 1.0;
-  }
-
  private:
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);

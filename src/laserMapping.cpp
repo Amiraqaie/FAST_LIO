@@ -39,10 +39,6 @@
 #include <fstream>
 #include <csignal>
 #include <chrono>
-#include <algorithm>
-#include <atomic>
-#include <array>
-#include <cmath>
 #include <unistd.h>
 #include <Python.h>
 #include <so3_math.h>
@@ -96,8 +92,7 @@ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0;
-std::atomic<int> publish_count{0};
+int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
@@ -285,79 +280,101 @@ void lasermap_fov_segment()
     kdtree_delete_time = omp_get_wtime() - delete_begin;
 }
 
-void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
+void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg) 
 {
-    if (!msg) return;
-    const double cur_time = get_time_sec(msg->header.stamp);
-    const double preprocess_start_time = omp_get_wtime();
-
-    // Do expensive PCL preprocessing without holding mtx_buffer. In
-    // particular, this must not block the IMU callback/high-rate predictor.
-    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
-
+    mtx_buffer.lock();
+    scan_count ++;
+    double cur_time = get_time_sec(msg->header.stamp);
+    double preprocess_start_time = omp_get_wtime();
+    if (!is_first_lidar && cur_time < last_timestamp_lidar)
     {
-        std::lock_guard<std::mutex> lock(mtx_buffer);
-        ++scan_count;
-        if (!is_first_lidar && cur_time < last_timestamp_lidar)
-        {
-            std::cerr << "lidar loop back, clear buffer" << std::endl;
-            lidar_buffer.clear();
-            time_buffer.clear();
-        }
-        if (is_first_lidar) is_first_lidar = false;
-
-        lidar_buffer.push_back(ptr);
-        time_buffer.push_back(cur_time);
-        last_timestamp_lidar = cur_time;
-        s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+        std::cerr << "lidar loop back, clear buffer" << std::endl;
+        lidar_buffer.clear();
     }
+    if (is_first_lidar)
+    {
+        is_first_lidar = false;
+    }
+
+    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    lidar_buffer.push_back(ptr);
+    time_buffer.push_back(cur_time);
+    last_timestamp_lidar = cur_time;
+    s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+    mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
 double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
-void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
+void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg) 
 {
-    if (!msg) return;
-    const double cur_time = get_time_sec(msg->header.stamp);
-    const double preprocess_start_time = omp_get_wtime();
-
-    // Keep the IMU queue lock out of the relatively expensive cloud conversion.
-    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
-
+    mtx_buffer.lock();
+    double cur_time = get_time_sec(msg->header.stamp);
+    double preprocess_start_time = omp_get_wtime();
+    scan_count ++;
+    if (!is_first_lidar && cur_time < last_timestamp_lidar)
     {
-        std::lock_guard<std::mutex> lock(mtx_buffer);
-        ++scan_count;
-        if (!is_first_lidar && cur_time < last_timestamp_lidar)
-        {
-            std::cerr << "lidar loop back, clear buffer" << std::endl;
-            lidar_buffer.clear();
-            time_buffer.clear();
-        }
-        if (is_first_lidar) is_first_lidar = false;
-        last_timestamp_lidar = cur_time;
-
-        if (!time_sync_en && std::abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 &&
-            !imu_buffer.empty() && !lidar_buffer.empty())
-        {
-            printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",
-                   last_timestamp_imu, last_timestamp_lidar);
-        }
-
-        if (time_sync_en && !timediff_set_flg &&
-            std::abs(last_timestamp_lidar - last_timestamp_imu) > 1.0 && !imu_buffer.empty())
-        {
-            timediff_set_flg = true;
-            timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
-            printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
-        }
-
-        lidar_buffer.push_back(ptr);
-        time_buffer.push_back(last_timestamp_lidar);
-        s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+        std::cerr << "lidar loop back, clear buffer" << std::endl;
+        lidar_buffer.clear();
     }
+    if(is_first_lidar)
+    {
+        is_first_lidar = false;
+    }
+    last_timestamp_lidar = cur_time;
+    
+    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
+    {
+        printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",last_timestamp_imu, last_timestamp_lidar);
+    }
+
+    if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
+    {
+        timediff_set_flg = true;
+        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
+        printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
+    }
+
+    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    lidar_buffer.push_back(ptr);
+    time_buffer.push_back(last_timestamp_lidar);
+    
+    s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+    mtx_buffer.unlock();
+    sig_buffer.notify_all();
+}
+
+void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
+{
+    publish_count ++;
+    // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
+    sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
+    
+
+    msg->header.stamp = get_ros_time(get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
+    if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
+    {
+        msg->header.stamp = \
+        rclcpp::Time(timediff_lidar_wrt_imu + get_time_sec(msg_in->header.stamp));
+    }
+
+    double timestamp = get_time_sec(msg->header.stamp);
+
+    mtx_buffer.lock();
+
+    if (timestamp < last_timestamp_imu)
+    {
+        std::cerr << "lidar loop back, clear buffer" << std::endl;
+        imu_buffer.clear();
+    }
+
+    last_timestamp_imu = timestamp;
+
+    imu_buffer.push_back(msg);
+    mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
@@ -836,7 +853,6 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 class LaserMappingNode : public rclcpp::Node
 {
 public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     LaserMappingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions()) : Node("laser_mapping", options)
     {
         this->declare_parameter<bool>("publish.path_en", true);
@@ -944,25 +960,6 @@ public:
         fill(epsi, epsi+23, 0.001);
         kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
-        // Independent EKF: prediction only. The main FAST-LIO EKF remains
-        // exclusively owned by the mapping callback.
-        kf_highrate_.init_dyn_share(
-            get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
-
-        this->declare_parameter<double>("highrate.max_imu_dt", 0.05);
-        this->declare_parameter<int>("highrate.history_size", 2000);
-        this->get_parameter("highrate.max_imu_dt", highrate_max_dt_);
-        this->get_parameter("highrate.history_size", highrate_history_size_);
-        highrate_max_dt_ = std::max(0.001, highrate_max_dt_);
-        highrate_history_size_ = std::max(100, highrate_history_size_);
-
-        // The IMU callback must be able to run while the mapping callback is
-        // doing scan matching. LiDAR input and mapping timers share one group.
-        mapping_callback_group_ = this->create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
-        imu_callback_group_ = this->create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
-
         /*** debug record ***/
         // FILE *fp;
         string pos_log_dir = root_dir + "/Log/pos_log.txt";
@@ -978,49 +975,31 @@ public:
             cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
 
         /*** ROS subscribe initialization ***/
-        rclcpp::SubscriptionOptions lidar_options;
-        lidar_options.callback_group = mapping_callback_group_;
         if (p_pre->lidar_type == AVIA)
         {
-            sub_pcl_livox_ = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-                lid_topic, 20, livox_pcl_cbk, lidar_options);
+            sub_pcl_livox_ = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
         }
         else
         {
-            sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-                lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk, lidar_options);
+            sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
         }
-        rclcpp::SubscriptionOptions imu_options;
-        imu_options.callback_group = imu_callback_group_;
-        sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            imu_topic, rclcpp::QoS(rclcpp::KeepLast(100)).best_effort(),
-            std::bind(&LaserMappingNode::imu_callback, this, std::placeholders::_1),
-            imu_options);
+        sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
-        pubOdomHighrate_ = this->create_publisher<nav_msgs::msg::Odometry>(
-            "/Odometry_highrate", 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         //------------------------------------------------------------------------------------------------------
         auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
-        timer_ = rclcpp::create_timer(this, this->get_clock(), period_ms,
-            std::bind(&LaserMappingNode::timer_callback, this), mapping_callback_group_);
+        timer_ = rclcpp::create_timer(this, this->get_clock(), period_ms, std::bind(&LaserMappingNode::timer_callback, this));
 
         auto map_period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0));
-        map_pub_timer_ = rclcpp::create_timer(this, this->get_clock(), map_period_ms,
-            std::bind(&LaserMappingNode::map_publish_callback, this), mapping_callback_group_);
+        map_pub_timer_ = rclcpp::create_timer(this, this->get_clock(), map_period_ms, std::bind(&LaserMappingNode::map_publish_callback, this));
 
-        map_save_srv_ = this->create_service<std_srvs::srv::Trigger>(
-            "map_save",
-            std::bind(&LaserMappingNode::map_save_callback, this,
-                      std::placeholders::_1, std::placeholders::_2),
-            rmw_qos_profile_services_default,
-            mapping_callback_group_);
+        map_save_srv_ = this->create_service<std_srvs::srv::Trigger>("map_save", std::bind(&LaserMappingNode::map_save_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         RCLCPP_INFO(this->get_logger(), "Node init finished.");
     }
@@ -1033,229 +1012,9 @@ public:
     }
 
 private:
-    struct HighrateImuSample
-    {
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-        double stamp = 0.0;
-        Eigen::Vector3d acc = Eigen::Vector3d::Zero();
-        Eigen::Vector3d gyro = Eigen::Vector3d::Zero();
-    };
-
-    void imu_callback(sensor_msgs::msg::Imu::UniquePtr msg_in)
-    {
-        if (!msg_in) return;
-        ++publish_count;
-
-        auto msg = std::make_shared<sensor_msgs::msg::Imu>(*msg_in);
-        bool time_reset = false;
-        {
-            std::lock_guard<std::mutex> lock(mtx_buffer);
-            msg->header.stamp = get_ros_time(
-                get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
-            if (std::abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
-            {
-                msg->header.stamp = get_ros_time(
-                    timediff_lidar_wrt_imu + get_time_sec(msg_in->header.stamp));
-            }
-
-            const double stamp = get_time_sec(msg->header.stamp);
-            if (stamp <= last_timestamp_imu && last_timestamp_imu >= 0.0)
-            {
-                if (stamp < last_timestamp_imu)
-                {
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                        "IMU timestamp moved backwards; clearing synchronization buffers");
-                    imu_buffer.clear();
-                    time_reset = true;
-                }
-                else
-                {
-                    // Duplicate timestamp: do not feed either estimator twice.
-                    return;
-                }
-            }
-            last_timestamp_imu = stamp;
-            imu_buffer.push_back(msg);
-        }
-        sig_buffer.notify_all();
-
-        const double stamp = rclcpp::Time(msg->header.stamp).seconds();
-        HighrateImuSample sample;
-        sample.stamp = stamp;
-        sample.acc = Eigen::Vector3d(msg->linear_acceleration.x,
-                                     msg->linear_acceleration.y,
-                                     msg->linear_acceleration.z);
-        sample.gyro = Eigen::Vector3d(msg->angular_velocity.x,
-                                      msg->angular_velocity.y,
-                                      msg->angular_velocity.z);
-
-        std::lock_guard<std::mutex> hr_lock(highrate_mutex_);
-        if (time_reset)
-        {
-            highrate_samples_.clear();
-            highrate_valid_ = false;
-        }
-        if (!highrate_samples_.empty() && stamp <= highrate_samples_.back().stamp)
-            return;
-        highrate_samples_.push_back(sample);
-        while (static_cast<int>(highrate_samples_.size()) > highrate_history_size_)
-            highrate_samples_.pop_front();
-
-        if (highrate_valid_ && advance_highrate_locked())
-            publish_highrate_locked();
-    }
-
-    bool interpolate_imu_locked(double stamp, Eigen::Vector3d &acc,
-                                Eigen::Vector3d &gyro) const
-    {
-        if (highrate_samples_.empty()) return false;
-        constexpr double eps = 1e-7;
-        auto it = std::lower_bound(
-            highrate_samples_.begin(), highrate_samples_.end(), stamp,
-            [](const HighrateImuSample &sample, double t) { return sample.stamp < t; });
-
-        if (it != highrate_samples_.end() && std::abs(it->stamp - stamp) <= eps)
-        {
-            acc = it->acc;
-            gyro = it->gyro;
-            return true;
-        }
-        if (it == highrate_samples_.begin() || it == highrate_samples_.end())
-            return false;
-
-        const auto &b = *it;
-        const auto &a = *(it - 1);
-        const double dt = b.stamp - a.stamp;
-        if (!(dt > 0.0) || dt > highrate_max_dt_) return false;
-        const double raw_alpha = (stamp - a.stamp) / dt;
-        const double alpha = std::max(0.0, std::min(1.0, raw_alpha));
-        acc = (1.0 - alpha) * a.acc + alpha * b.acc;
-        gyro = (1.0 - alpha) * a.gyro + alpha * b.gyro;
-        return true;
-    }
-
-    bool advance_highrate_locked()
-    {
-        if (!highrate_valid_ || highrate_samples_.empty()) return false;
-
-        Eigen::Vector3d previous_acc, previous_gyro;
-        if (!interpolate_imu_locked(highrate_last_time_, previous_acc, previous_gyro))
-            return false;  // Wait until an IMU sample brackets the correction time.
-
-        bool advanced = false;
-        for (const auto &sample : highrate_samples_)
-        {
-            if (sample.stamp <= highrate_last_time_ + 1e-9) continue;
-            const double dt = sample.stamp - highrate_last_time_;
-            if (!(dt > 0.0) || !std::isfinite(dt)) continue;
-            if (dt > highrate_max_dt_)
-            {
-                highrate_valid_ = false;
-                RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                    "High-rate odometry invalidated: IMU gap %.6f s exceeds %.6f s; waiting for next LiDAR correction",
-                    dt, highrate_max_dt_);
-                return false;
-            }
-
-            input_ikfom input;
-            const Eigen::Vector3d acc_mid =
-                0.5 * (previous_acc + sample.acc) * highrate_accel_scale_;
-            const Eigen::Vector3d gyro_mid = 0.5 * (previous_gyro + sample.gyro);
-            double acc_data[3] = {acc_mid.x(), acc_mid.y(), acc_mid.z()};
-            double gyro_data[3] = {gyro_mid.x(), gyro_mid.y(), gyro_mid.z()};
-            input.acc = vect3(acc_data, 3);
-            input.gyro = vect3(gyro_data, 3);
-
-            auto Q = highrate_Q_;
-            double predict_dt = dt;
-            kf_highrate_.predict(predict_dt, Q, input);
-            highrate_last_time_ = sample.stamp;
-            previous_acc = sample.acc;
-            previous_gyro = sample.gyro;
-            advanced = true;
-        }
-        return advanced;
-    }
-
-    void reset_highrate_from_lidar(double correction_stamp)
-    {
-        if (!p_imu->is_initialized()) return;
-
-        std::lock_guard<std::mutex> lock(highrate_mutex_);
-        state_ikfom corrected_state = kf.get_x();
-        kf_highrate_.change_x(corrected_state);
-        auto corrected_covariance = kf.get_P();
-        kf_highrate_.change_P(corrected_covariance);
-        highrate_Q_ = p_imu->Q;
-        highrate_accel_scale_ = p_imu->acceleration_scale();
-        highrate_last_time_ = correction_stamp;
-        highrate_last_publish_time_ = -1.0;
-        highrate_valid_ = true;
-
-        if (advance_highrate_locked())
-            publish_highrate_locked();
-    }
-
-    void publish_highrate_locked()
-    {
-        if (!highrate_valid_ || highrate_last_time_ <= highrate_last_publish_time_ + 1e-9)
-            return;
-
-        const auto &state = kf_highrate_.get_x();
-        const auto P = kf_highrate_.get_P();
-        Eigen::Quaterniond q(state.rot.toRotationMatrix());
-        q.normalize();
-
-        nav_msgs::msg::Odometry msg;
-        msg.header.frame_id = "odom";
-        msg.child_frame_id = "livox_frame";
-        msg.header.stamp = get_ros_time(highrate_last_time_);
-        msg.pose.pose.position.x = state.pos[0];
-        msg.pose.pose.position.y = state.pos[1];
-        msg.pose.pose.position.z = state.pos[2];
-        msg.pose.pose.orientation.x = q.x();
-        msg.pose.pose.orientation.y = q.y();
-        msg.pose.pose.orientation.z = q.z();
-        msg.pose.pose.orientation.w = q.w();
-
-        const Eigen::Vector3d velocity_world(state.vel[0], state.vel[1], state.vel[2]);
-        const Eigen::Vector3d velocity_body = q.inverse() * velocity_world;
-        msg.twist.twist.linear.x = velocity_body.x();
-        msg.twist.twist.linear.y = velocity_body.y();
-        msg.twist.twist.linear.z = velocity_body.z();
-
-        const Eigen::Matrix3d velocity_cov_world = P.block<3, 3>(12, 12);
-        const Eigen::Matrix3d R_body_to_world = q.toRotationMatrix();
-        const Eigen::Matrix3d velocity_cov_body =
-            R_body_to_world.transpose() * velocity_cov_world * R_body_to_world;
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                msg.twist.covariance[i * 6 + j] = velocity_cov_body(i, j);
-
-        for (int i = 0; i < 6; ++i)
-        {
-            const int k = (i < 3) ? i + 3 : i - 3;
-            for (int j = 0; j < 3; ++j)
-            {
-                msg.pose.covariance[i * 6 + j] = P(k, 3 + j);
-                msg.pose.covariance[i * 6 + 3 + j] = P(k, j);
-            }
-        }
-
-        pubOdomHighrate_->publish(msg);
-        highrate_last_publish_time_ = highrate_last_time_;
-    }
-
     void timer_callback()
     {
-        bool have_measurement = false;
-        {
-            // IMU and LiDAR subscriptions run in separate callback groups.
-            // Protect the shared input queues while extracting one complete scan.
-            std::lock_guard<std::mutex> lock(mtx_buffer);
-            have_measurement = sync_packages(Measures);
-        }
-        if(have_measurement)
+        if(sync_packages(Measures))
         {
             if (flg_first_scan)
             {
@@ -1276,9 +1035,6 @@ private:
 
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
-            // Establish/update the independent predictor even before the map
-            // is ready; it will be reset again after the LiDAR measurement update.
-            reset_highrate_from_lidar(Measures.lidar_end_time);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
@@ -1352,7 +1108,6 @@ private:
             double solve_H_time = 0;
             kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
             state_point = kf.get_x();
-            reset_highrate_from_lidar(Measures.lidar_end_time);
             euler_cur = SO3ToEuler(state_point.rot);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
             geoQuat.x = state_point.rot.coeffs()[0];
@@ -1431,26 +1186,11 @@ private:
     }
 
 private:
-    rclcpp::CallbackGroup::SharedPtr mapping_callback_group_;
-    rclcpp::CallbackGroup::SharedPtr imu_callback_group_;
-
-    esekfom::esekf<state_ikfom, 12, input_ikfom> kf_highrate_;
-    std::mutex highrate_mutex_;
-    std::deque<HighrateImuSample, Eigen::aligned_allocator<HighrateImuSample>> highrate_samples_;
-    Eigen::Matrix<double, 12, 12> highrate_Q_ = Eigen::Matrix<double, 12, 12>::Zero();
-    double highrate_accel_scale_ = 1.0;
-    double highrate_last_time_ = -1.0;
-    double highrate_last_publish_time_ = -1.0;
-    double highrate_max_dt_ = 0.05;
-    int highrate_history_size_ = 2000;
-    bool highrate_valid_ = false;
-
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomHighrate_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
@@ -1477,10 +1217,7 @@ int main(int argc, char** argv)
 
     signal(SIGINT, SigHandle);
 
-    auto node = std::make_shared<LaserMappingNode>();
-    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
-    executor.add_node(node);
-    executor.spin();
+    rclcpp::spin(std::make_shared<LaserMappingNode>());
 
     if (rclcpp::ok())
         rclcpp::shutdown();
