@@ -85,10 +85,12 @@ message(STATUS "PCL: ${PCL_INCLUDE_DIRS}")
 
 set(msg_files
   "msg/Pose6D.msg"
+  "msg/LioState.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
+  DEPENDENCIES std_msgs
 )
 ament_export_dependencies(rosidl_default_runtime)
 
@@ -98,19 +100,25 @@ target_include_directories(fastlio_mapping PUBLIC
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
 )
-target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} Eigen3::Eigen)
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
+
+add_executable(highrate_odom src/highrate_odom.cpp)
+
+target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} Eigen3::Eigen)
+target_link_libraries(highrate_odom Eigen3::Eigen)
+
+ament_target_dependencies(fastlio_mapping ${dependencies})
+ament_target_dependencies(highrate_odom rclcpp sensor_msgs nav_msgs)
 
 list(APPEND EOL_LIST "foxy" "galactic" "eloquent" "dashing" "crystal")
 
 if($ENV{ROS_DISTRO} IN_LIST EOL_LIST)
-  # Custommsg to support foxy & galactic
-  rosidl_target_interfaces(fastlio_mapping
-    ${PROJECT_NAME} "rosidl_typesupport_cpp")
+  rosidl_target_interfaces(fastlio_mapping ${PROJECT_NAME} "rosidl_typesupport_cpp")
+  rosidl_target_interfaces(highrate_odom   ${PROJECT_NAME} "rosidl_typesupport_cpp")
 else()
-  rosidl_get_typesupport_target(cpp_typesupport_target
-    ${PROJECT_NAME} "rosidl_typesupport_cpp")
+  rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
   target_link_libraries(fastlio_mapping ${cpp_typesupport_target})
+  target_link_libraries(highrate_odom   ${cpp_typesupport_target})
 endif()
 
 ament_target_dependencies(fastlio_mapping ${dependencies})
@@ -119,6 +127,8 @@ ament_target_dependencies(fastlio_mapping ${dependencies})
 install(TARGETS fastlio_mapping
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(TARGETS highrate_odom DESTINATION lib/${PROJECT_NAME})
 
 install(
   DIRECTORY config launch rviz

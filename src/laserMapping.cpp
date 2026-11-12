@@ -62,6 +62,7 @@
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
+#include <fast_lio/msg/lio_state.hpp>
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -715,6 +716,31 @@ void publish_odometry(
     // tf_br->sendTransform(trans);
 }
 
+void publish_lio_state(const rclcpp::Publisher<fast_lio::msg::LioState>::SharedPtr pub)
+{
+    fast_lio::msg::LioState m;
+    m.header.stamp = get_ros_time(lidar_end_time);
+    m.header.frame_id = "odom";
+
+    for (int i = 0; i < 3; i++)
+    {
+        m.pos[i]           = state_point.pos(i);
+        m.vel[i]           = state_point.vel(i);
+        m.bg[i]            = state_point.bg(i);
+        m.ba[i]            = state_point.ba(i);
+        m.grav[i]          = state_point.grav[i];
+        m.offset_T_L_I[i]  = state_point.offset_T_L_I(i);
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        m.rot[i]           = state_point.rot.coeffs()[i];           // x y z w
+        m.offset_R_L_I[i]  = state_point.offset_R_L_I.coeffs()[i];
+    }
+
+    Eigen::Map<Eigen::Matrix<double, 23, 23, Eigen::RowMajor>>(m.cov.data()) = kf.get_P();
+    pub->publish(m);
+}
+
 void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
 {
     set_posestamp(msg_body_pose);
@@ -989,6 +1015,7 @@ public:
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+        pubLioState_ = this->create_publisher<fast_lio::msg::LioState>("/lio_state", 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -1119,6 +1146,7 @@ private:
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+            publish_lio_state(pubLioState_);
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
@@ -1191,6 +1219,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+    rclcpp::Publisher<fast_lio::msg::LioState>::SharedPtr pubLioState_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
