@@ -729,12 +729,12 @@ void publish_lio_state(const rclcpp::Publisher<fast_lio::msg::LioState>::SharedP
         m.bg[i]            = state_point.bg(i);
         m.ba[i]            = state_point.ba(i);
         m.grav[i]          = state_point.grav[i];
-        m.offset_T_L_I[i]  = state_point.offset_T_L_I(i);
+        m.offset_t_l_i[i]  = state_point.offset_T_L_I(i);
     }
     for (int i = 0; i < 4; i++)
     {
         m.rot[i]           = state_point.rot.coeffs()[i];           // x y z w
-        m.offset_R_L_I[i]  = state_point.offset_R_L_I.coeffs()[i];
+        m.offset_r_l_i[i]  = state_point.offset_R_L_I.coeffs()[i];
     }
 
     Eigen::Map<Eigen::Matrix<double, 23, 23, Eigen::RowMajor>>(m.cov.data()) = kf.get_P();

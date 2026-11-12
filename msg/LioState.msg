@@ -5,6 +5,6 @@ float64[3]  vel               # world frame
 float64[3]  bg
 float64[3]  ba
 float64[3]  grav              # world frame
-float64[4]  offset_R_L_I      # quaternion x y z w
-float64[3]  offset_T_L_I
+float64[4]  offset_r_l_i      # quaternion x y z w
+float64[3]  offset_t_l_i
 float64[529] cov              # 23x23 row-major, order: pos, rot, offR, offT, vel, bg, ba, grav(2)
