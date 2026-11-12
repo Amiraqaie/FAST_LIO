@@ -1107,6 +1107,7 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Node init finished.");
     }
+    std::atomic<uint64_t> highrate_reset_counter_{0};
 
     ~LaserMappingNode()
     {
@@ -1371,6 +1372,15 @@ private:
         double anchor_time,
         const HighRateImuPtr &anchor_imu)
     {
+        const uint64_t reset_id =
+            highrate_reset_counter_.fetch_add(1);
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[HR-RESET id=%lu] ENTER anchor=%.9f",
+            static_cast<unsigned long>(reset_id),
+            anchor_time
+        );
         RCLCPP_INFO(
             this->get_logger(),
             "[HR-RESET 0] entered: anchor=%.9f imu=%p",
@@ -1530,7 +1540,8 @@ private:
 
         RCLCPP_INFO(
             this->get_logger(),
-            "[HR-RESET 11] finished; replayed=%zu initialized=%d",
+            "[HR-RESET id=%lu] RETURNING replayed=%zu initialized=%d",
+            static_cast<unsigned long>(reset_id),
             replay_count,
             static_cast<int>(highrate_initialized_)
         );
@@ -1641,21 +1652,39 @@ private:
 
             // First synchronization after IMU initialization or scan propagation.
             // This also ensures early returns below do not leave the predictor stale.
-            if (p_imu->is_initialized() && !Measures.imu.empty())
-            {
-                reset_highrate_from_main_kf(
-                    Measures.lidar_end_time,
-                    Measures.imu.back()
-                );
-            }
+            // if (p_imu->is_initialized() && !Measures.imu.empty())
+            // {
+            //     reset_highrate_from_main_kf(
+            //         Measures.lidar_end_time,
+            //         Measures.imu.back()
+            //     );
+            // }
 
             state_point = kf.get_x();
 
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
-            if (feats_undistort->empty() || (feats_undistort == NULL))
+            // if (feats_undistort->empty() || (feats_undistort == NULL))
+            // {
+            //     RCLCPP_WARN(this->get_logger(), "No point, skip this scan!\n");
+            //     return;
+            // }
+
+            if (feats_undistort == nullptr || feats_undistort->empty())
             {
-                RCLCPP_WARN(this->get_logger(), "No point, skip this scan!\n");
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "No point, skip this scan"
+                );
+
+                if (p_imu->is_initialized() && !Measures.imu.empty())
+                {
+                    reset_highrate_from_main_kf(
+                        Measures.lidar_end_time,
+                        Measures.imu.back()
+                    );
+                }
+
                 return;
             }
 
