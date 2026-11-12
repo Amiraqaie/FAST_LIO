@@ -49,7 +49,15 @@ class ImuProcess
   void set_acc_bias_cov(const V3D &b_a);
   Eigen::Matrix<double, 12, 12> Q;
   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
+  bool is_initialized() const
+  {
+      return !imu_need_init_;
+  }
 
+  double get_mean_acc_norm() const
+  {
+      return mean_acc.norm();
+  }
   ofstream fout_imu;
   V3D cov_acc;
   V3D cov_gyr;
@@ -395,6 +403,11 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
     imu_need_init_ = true;
     
     last_imu_   = meas.imu.back();
+
+    // The EKF initialization state is associated with this LiDAR end time.
+    // This also initializes last_lidar_end_time_ before the first
+    // normal UndistortPcl() execution.
+    last_lidar_end_time_ = meas.lidar_end_time;
 
     state_ikfom imu_state = kf_state.get_x();
     if (init_iter_num > MAX_INI_COUNT)
