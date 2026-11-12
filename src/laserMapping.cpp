@@ -1370,7 +1370,7 @@ private:
 
     void reset_highrate_from_main_kf(
         double anchor_time,
-        const HighRateImuPtr &anchor_imu)
+        HighRateImuPtr anchor_imu)
     {
         const uint64_t reset_id =
             highrate_reset_counter_.fetch_add(1);
@@ -1679,10 +1679,25 @@ private:
 
                 if (p_imu->is_initialized() && !Measures.imu.empty())
                 {
-                    reset_highrate_from_main_kf(
-                        Measures.lidar_end_time,
-                        Measures.imu.back()
-                    );
+                    if (!Measures.imu.empty())
+                    {
+                        HighRateImuPtr anchor_imu = Measures.imu.back();
+
+                        if (anchor_imu)
+                        {
+                            reset_highrate_from_main_kf(
+                                Measures.lidar_end_time,
+                                anchor_imu
+                            );
+                        }
+                    }
+                    else
+                    {
+                        RCLCPP_WARN(
+                            this->get_logger(),
+                            "[HR-RESET] Cannot reset: Measures.imu is empty"
+                        );
+                    }
                 }
 
                 return;
@@ -1759,10 +1774,25 @@ private:
             geoQuat.y = state_point.rot.coeffs()[1];
             geoQuat.z = state_point.rot.coeffs()[2];
             geoQuat.w = state_point.rot.coeffs()[3];
-            reset_highrate_from_main_kf(
-                Measures.lidar_end_time,
-                Measures.imu.back()
-            );
+                if (!Measures.imu.empty())
+                {
+                    HighRateImuPtr anchor_imu = Measures.imu.back();
+
+                    if (anchor_imu)
+                    {
+                        reset_highrate_from_main_kf(
+                            Measures.lidar_end_time,
+                            anchor_imu
+                        );
+                    }
+                }
+                else
+                {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "[HR-RESET] Cannot reset: Measures.imu is empty"
+                    );
+                }
             double t_update_end = omp_get_wtime();
 
             /******* Publish odometry *******/
