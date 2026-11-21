@@ -61,7 +61,6 @@
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
-#include "scan_color.hpp"
 #include <ikd-Tree/ikd_Tree.h>
 #include <fast_lio/msg/lio_state.hpp>
 
@@ -486,43 +485,66 @@ void map_incremental()
     kdtree_incremental_time = omp_get_wtime() - st_time;
 }
 
-std::unique_ptr<ScanColor> scan_color;
-std::vector<ScanColor::Sample> published_map_colors;
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI());
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
-// Append each completed RGB scan once. The slower map timer only publishes snapshots.
-double rgb_map_stamp = 0.0;
-bool rgb_map_dirty = false;
-
-void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull,
-                         bool accumulate_rgb_map, double stamp)
+void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull)
 {
-    const auto &lidar = dense_pub_en ? *feats_undistort : *feats_down_body;
-    PointCloudXYZI world(lidar.size(), 1);
-    std::vector<ScanColor::Sample> colors;
-    if (scan_color) colors.reserve(lidar.size());
-    for (size_t i = 0; i < lidar.size(); ++i) {
-        RGBpointBodyToWorld(&lidar[i], &world[i]);
-        if (scan_color) colors.push_back(scan_color->sample(lidar[i]));
-    }
-    if (accumulate_rgb_map) {
-        *pcl_wait_pub += world;
-        published_map_colors.insert(published_map_colors.end(), colors.begin(), colors.end());
-        rgb_map_stamp = stamp;
-        rgb_map_dirty = true;
-    }
-    if (scan_pub_en) {
-        sensor_msgs::msg::PointCloud2 msg;
-        pcl::toROSMsg(world, msg);
-        if (scan_color) ScanColor::append(msg, [&](size_t i) { return colors[i]; });
-        msg.header.stamp = get_ros_time(stamp);
-        msg.header.frame_id = "odom";
-        pubLaserCloudFull->publish(msg);
+    if(scan_pub_en)
+    {
+        PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);
+        int size = laserCloudFullRes->points.size();
+        PointCloudXYZI::Ptr laserCloudWorld( \
+                        new PointCloudXYZI(size, 1));
+
+        for (int i = 0; i < size; i++)
+        {
+            RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
+                                &laserCloudWorld->points[i]);
+        }
+
+        sensor_msgs::msg::PointCloud2 laserCloudmsg;
+        pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
+        // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+        laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+        laserCloudmsg.header.frame_id = "odom";
+        pubLaserCloudFull->publish(laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
     }
+
+    /**************** save map ****************/
+    /* 1. make sure you have enough memories
+    /* 2. noted that pcd save will influence the real-time performences **/
+    /*
+    if (pcd_save_en)
+    {
+        int size = feats_undistort->points.size();
+        PointCloudXYZI::Ptr laserCloudWorld( \
+                        new PointCloudXYZI(size, 1));
+
+        for (int i = 0; i < size; i++)
+        {
+            RGBpointBodyToWorld(&feats_undistort->points[i], \
+                                &laserCloudWorld->points[i]);
+        }
+        *pcl_wait_save += *laserCloudWorld;
+
+        static int scan_wait_num = 0;
+        scan_wait_num ++;
+        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
+        {
+            pcd_index ++;
+            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+            pcl::PCDWriter pcd_writer;
+            cout << "current scan saved to /PCD/" << all_points_dir << endl;
+            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+            pcl_wait_save->clear();
+            scan_wait_num = 0;
+        }
+    }
+    */
 }
 
-void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body, double stamp)
+void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body)
 {
     int size = feats_undistort->points.size();
     PointCloudXYZI::Ptr laserCloudIMUBody(new PointCloudXYZI(size, 1));
@@ -535,14 +557,13 @@ void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shared
 
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
-    if (scan_color) ScanColor::append(laserCloudmsg, [&](size_t i) { return scan_color->sample(feats_undistort->points[i]); });
-    laserCloudmsg.header.stamp = get_ros_time(stamp);
+    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = "livox_frame";
     pubLaserCloudFull_body->publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
 
-void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect, double stamp)
+void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect)
 {
     PointCloudXYZI::Ptr laserCloudWorld( \
                     new PointCloudXYZI(effct_feat_num, 1));
@@ -553,29 +574,29 @@ void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shar
     }
     sensor_msgs::msg::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
-    if (scan_color) ScanColor::append(laserCloudFullRes3, [&](size_t i) { return scan_color->sample(laserCloudOri->points[i]); });
-    laserCloudFullRes3.header.stamp = get_ros_time(stamp);
+    laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
     laserCloudFullRes3.header.frame_id = "odom";
     pubLaserCloudEffect->publish(laserCloudFullRes3);
 }
 
 void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap)
 {
-    if (scan_color) {
-        if (!rgb_map_dirty) return;
-        rgb_map_dirty = false;
-    } else {
-        const auto &lidar = dense_pub_en ? *feats_undistort : *feats_down_body;
-        PointCloudXYZI world(lidar.size(), 1);
-        for (size_t i = 0; i < lidar.size(); ++i)
-            RGBpointBodyToWorld(&lidar[i], &world[i]);
-        *pcl_wait_pub += world;
+    PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);
+    int size = laserCloudFullRes->points.size();
+    PointCloudXYZI::Ptr laserCloudWorld( \
+                    new PointCloudXYZI(size, 1));
+
+    for (int i = 0; i < size; i++)
+    {
+        RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
+                            &laserCloudWorld->points[i]);
     }
+    *pcl_wait_pub += *laserCloudWorld;
+
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
-    if (scan_color)
-        ScanColor::append(laserCloudmsg, [](size_t i) { return published_map_colors[i]; });
-    laserCloudmsg.header.stamp = get_ros_time(scan_color ? rgb_map_stamp : lidar_end_time);
+    // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = "odom";
     pubLaserCloudMap->publish(laserCloudmsg);
 
@@ -860,8 +881,6 @@ class LaserMappingNode : public rclcpp::Node
 public:
     LaserMappingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions()) : Node("laser_mapping", options)
     {
-        if (this->declare_parameter<bool>("color.enabled", false))
-            scan_color = std::make_unique<ScanColor>(*this);
         this->declare_parameter<bool>("publish.path_en", true);
         this->declare_parameter<bool>("publish.effect_map_en", false);
         this->declare_parameter<bool>("publish.map_en", false);
@@ -994,7 +1013,7 @@ public:
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
-        pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", scan_color ? 1 : 20);
+        pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
         pubLioState_ = this->create_publisher<fast_lio::msg::LioState>("/lio_state", 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
@@ -1020,30 +1039,9 @@ public:
     }
 
 private:
-    bool cloud_pending_ = false;
-    double cloud_stamp_ = 0;
-    std::chrono::steady_clock::time_point cloud_deadline_;
-
-    void publish_pending_clouds(bool next_scan_ready)
-    {
-        if (!cloud_pending_) return;
-        if (scan_color && !scan_color->select(cloud_stamp_) && !next_scan_ready &&
-            std::chrono::steady_clock::now() < cloud_deadline_) return;
-
-        const bool accumulate_rgb_map = scan_color && map_pub_en;
-        if (scan_pub_en || accumulate_rgb_map)
-            publish_frame_world(pubLaserCloudFull_, accumulate_rgb_map, cloud_stamp_);
-        if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body_, cloud_stamp_);
-        if (effect_pub_en) publish_effect_world(pubLaserCloudEffect_, cloud_stamp_);
-        cloud_pending_ = false;
-    }
-
     void timer_callback()
     {
-        const bool next_scan_ready = sync_packages(Measures);
-        // Finish the previous output before deskewing overwrites its scan and pose.
-        publish_pending_clouds(next_scan_ready);
-        if (next_scan_ready)
+        if(sync_packages(Measures))
         {
             if (flg_first_scan)
             {
@@ -1156,11 +1154,11 @@ private:
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
-            if (path_en) publish_path(pubPath_);
-            cloud_stamp_ = lidar_end_time;
-            cloud_pending_ = true;
-            cloud_deadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
-            publish_pending_clouds(false);
+            if (path_en)                         publish_path(pubPath_);
+            if (scan_pub_en)      publish_frame_world(pubLaserCloudFull_);
+            if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body_);
+            if (effect_pub_en) publish_effect_world(pubLaserCloudEffect_);
+            // if (map_pub_en) publish_map(pubLaserCloudMap_);
 
             /*** Debug variables ***/
             if (runtime_pos_log)
