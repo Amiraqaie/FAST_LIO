@@ -40,7 +40,9 @@ public:
         std::copy(rotation.begin(), rotation.end(), r.begin());
         std::copy(translation.begin(), translation.end(), t.begin());
         auto topic = node.declare_parameter<std::string>("color.image_topic", "/camera/image_raw");
-        sub = node.create_subscription<sensor_msgs::msg::Image>(topic, rclcpp::SensorDataQoS(),
+        auto qos = rclcpp::SensorDataQoS();
+        if (node.declare_parameter<bool>("color.reliable_image", false)) qos.reliable();
+        sub = node.create_subscription<sensor_msgs::msg::Image>(topic, qos,
             [this, logger = node.get_logger(), clock = node.get_clock()](sensor_msgs::msg::Image::ConstSharedPtr msg) {
                 if (msg->width != static_cast<unsigned>(width) || msg->height != static_cast<unsigned>(height)) {
                     RCLCPP_WARN_THROTTLE(logger, *clock, 5000, "Image size differs from color calibration");
@@ -55,7 +57,7 @@ public:
             });
     }
 
-    void select(double scan_end)
+    bool select(double scan_end)
     {
         selected.reset();
         double best = max_dt;
@@ -66,6 +68,7 @@ public:
                 best = dt;
             }
         }
+        return static_cast<bool>(selected);
     }
 
     template<class Point>
