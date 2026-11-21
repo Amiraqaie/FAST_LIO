@@ -61,6 +61,7 @@
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
+#include "scan_color.hpp"
 #include <ikd-Tree/ikd_Tree.h>
 #include <fast_lio/msg/lio_state.hpp>
 
@@ -485,6 +486,8 @@ void map_incremental()
     kdtree_incremental_time = omp_get_wtime() - st_time;
 }
 
+std::unique_ptr<ScanColor> scan_color;
+std::vector<ScanColor::Sample> published_map_colors;
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI());
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
 void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull)
@@ -504,6 +507,7 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
 
         sensor_msgs::msg::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
+        if (scan_color) ScanColor::append(laserCloudmsg, [&](size_t i) { return scan_color->sample(laserCloudFullRes->points[i]); });
         // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
         laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
         laserCloudmsg.header.frame_id = "odom";
@@ -557,6 +561,7 @@ void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shared
 
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
+    if (scan_color) ScanColor::append(laserCloudmsg, [&](size_t i) { return scan_color->sample(feats_undistort->points[i]); });
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = "livox_frame";
     pubLaserCloudFull_body->publish(laserCloudmsg);
@@ -574,6 +579,7 @@ void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shar
     }
     sensor_msgs::msg::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
+    if (scan_color) ScanColor::append(laserCloudFullRes3, [&](size_t i) { return scan_color->sample(laserCloudOri->points[i]); });
     laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
     laserCloudFullRes3.header.frame_id = "odom";
     pubLaserCloudEffect->publish(laserCloudFullRes3);
@@ -595,6 +601,11 @@ void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub
 
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
+    if (scan_color) {
+        for (const auto &point : laserCloudFullRes->points)
+            published_map_colors.push_back(scan_color->sample(point));
+        ScanColor::append(laserCloudmsg, [](size_t i) { return published_map_colors[i]; });
+    }
     // laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = "odom";
@@ -881,6 +892,8 @@ class LaserMappingNode : public rclcpp::Node
 public:
     LaserMappingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions()) : Node("laser_mapping", options)
     {
+        if (this->declare_parameter<bool>("color.enabled", false))
+            scan_color = std::make_unique<ScanColor>(*this);
         this->declare_parameter<bool>("publish.path_en", true);
         this->declare_parameter<bool>("publish.effect_map_en", false);
         this->declare_parameter<bool>("publish.map_en", false);
@@ -1154,6 +1167,7 @@ private:
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
+            if (scan_color) scan_color->select(lidar_end_time);
             if (path_en)                         publish_path(pubPath_);
             if (scan_pub_en)      publish_frame_world(pubLaserCloudFull_);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body_);

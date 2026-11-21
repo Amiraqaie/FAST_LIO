@@ -197,3 +197,20 @@ The main structure of this UAV is 3d printed (Aluminum or PLA), the .stl file wi
 ## 6.Acknowledgments
 
 Thanks for LOAM(J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time), [Livox_Mapping](https://github.com/Livox-SDK/livox_mapping), [LINS](https://github.com/ChaoqinRobotics/LINS---LiDAR-inertial-SLAM) and [Loam_Livox](https://github.com/hku-mars/loam_livox).
+
+### Camera RGB on published clouds (ROS 2)
+
+Set `color.enabled: true` in the mapping YAML to add a packed PCL `rgb`
+field to the registered, body, effective-point and accumulated map topics
+when those publishers are enabled. Select **RGB8** as the color transformer
+in RViz. The default is disabled.
+
+Configure `color.image_topic`, `color.width`, `color.height`, and
+`color.intrinsics` (fx, fy, cx, cy) for a rectified pinhole image.
+`color.rotation` is the row-major 3×3 rotation from LiDAR to camera optical
+coordinates (right, down, forward). `color.translation` is the corresponding
+translation in metres. Images and scans must use the same timestamp clock.
+The closest buffered image within `color.max_time_difference` seconds of scan
+end provides the colors. Unobserved points receive gray with `has_color=0`. Sampled pixels, including black, carry `has_color=1`. Projection assumes
+negligible motion over this interval. Odometry and map estimation use LiDAR
+and IMU only.
